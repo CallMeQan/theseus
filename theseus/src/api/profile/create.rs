@@ -1,13 +1,13 @@
 //! Theseus profile management interface
 use crate::pack::install_from::CreatePackProfile;
 use crate::prelude::ProfilePathId;
-use crate::profile;
 use crate::state::LinkedData;
 use crate::util::io::{self, canonicalize};
 use crate::{
     event::{emit::emit_profile, ProfilePayloadType},
     prelude::ModLoader,
 };
+use crate::{pack, profile, ErrorKind};
 pub use crate::{
     state::{JavaSettings, Profile},
     State,
@@ -102,6 +102,12 @@ pub async fn profile_create(
         }
 
         profile.metadata.linked_data = linked_data;
+        if let Some(linked_data) = &mut profile.metadata.linked_data {
+            linked_data.locked = Some(
+                linked_data.project_id.is_some()
+                    && linked_data.version_id.is_some(),
+            );
+        }
 
         emit_profile(
             uuid,
@@ -119,7 +125,7 @@ pub async fn profile_create(
         }
 
         if !skip_install_profile.unwrap_or(false) {
-            crate::launcher::install_minecraft(&profile, None).await?;
+            crate::launcher::install_minecraft(&profile, None, false).await?;
         }
         State::sync().await?;
 
@@ -154,6 +160,66 @@ pub async fn profile_create_from_creator(
     .await
 }
 
+pub async fn profile_create_from_duplicate(
+    copy_from: ProfilePathId,
+) -> crate::Result<ProfilePathId> {
+    // Original profile
+    let profile = profile::get(&copy_from, None).await?.ok_or_else(|| {
+        ErrorKind::UnmanagedProfileError(copy_from.to_string())
+    })?;
+
+    let profile_path_id = profile_create(
+        profile.metadata.name.clone(),
+        profile.metadata.game_version.clone(),
+        profile.metadata.loader,
+        profile.metadata.loader_version.clone().map(|it| it.id),
+        profile.metadata.icon.clone(),
+        profile.metadata.icon_url.clone(),
+        profile.metadata.linked_data.clone(),
+        Some(true),
+        Some(true),
+    )
+    .await?;
+
+    // Copy it over using the import system (essentially importing from the same profile)
+    let state = State::get().await?;
+    let bar = pack::import::copy_dotminecraft(
+        profile_path_id.clone(),
+        copy_from.get_full_path().await?,
+        &state.io_semaphore,
+        None,
+    )
+    .await?;
+
+    let duplicated_profile =
+        profile::get(&profile_path_id, None).await?.ok_or_else(|| {
+            ErrorKind::UnmanagedProfileError(profile_path_id.to_string())
+        })?;
+
+    crate::launcher::install_minecraft(&duplicated_profile, Some(bar), false)
+        .await?;
+    {
+        let state = State::get().await?;
+        let mut file_watcher = state.file_watcher.write().await;
+        Profile::watch_fs(
+            &profile.get_profile_full_path().await?,
+            &mut file_watcher,
+        )
+        .await?;
+    }
+
+    // emit profile edited
+    emit_profile(
+        profile.uuid,
+        &profile.profile_id(),
+        &profile.metadata.name,
+        ProfilePayloadType::Edited,
+    )
+    .await?;
+    State::sync().await?;
+    Ok(profile_path_id)
+}
+
 #[tracing::instrument]
 #[theseus_macros::debug_pin]
 pub(crate) async fn get_loader_version_from_loader(
@@ -180,6 +246,7 @@ pub(crate) async fn get_loader_version_from_loader(
         ModLoader::Forge => &metadata.forge,
         ModLoader::Fabric => &metadata.fabric,
         ModLoader::Quilt => &metadata.quilt,
+        ModLoader::NeoForge => &metadata.neoforge,
         _ => {
             return Err(
                 ProfileCreationError::NoManifest(loader.to_string()).into()
@@ -205,8 +272,8 @@ pub(crate) async fn get_loader_version_from_loader(
 
     let loader_version = loaders
         .iter()
+        .find(|&x| filter(x))
         .cloned()
-        .find(filter)
         .or(
             // If stable was searched for but not found, return latest by default
             if version == "stable" {

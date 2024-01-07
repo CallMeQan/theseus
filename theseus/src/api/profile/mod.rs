@@ -8,7 +8,7 @@ use crate::pack::install_from::{
     EnvType, PackDependency, PackFile, PackFileHash, PackFormat,
 };
 use crate::prelude::{JavaVersion, ProfilePathId, ProjectPathId};
-use crate::state::ProjectMetadata;
+use crate::state::{InnerProjectPathUnix, ProjectMetadata, SideType};
 
 use crate::util::fetch;
 use crate::util::io::{self, IOError};
@@ -25,8 +25,9 @@ use async_zip::tokio::write::ZipFileWriter;
 use async_zip::{Compression, ZipEntryBuilder};
 use serde_json::json;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use std::iter::FromIterator;
 use std::{
     future::Future,
     path::{Path, PathBuf},
@@ -107,6 +108,26 @@ pub async fn get_full_path(path: &ProfilePathId) -> crate::Result<PathBuf> {
     })?;
     let full_path = io::canonicalize(path.get_full_path().await?)?;
     Ok(full_path)
+}
+
+/// Get mod's full path in the filesystem
+#[tracing::instrument]
+pub async fn get_mod_full_path(
+    profile_path: &ProfilePathId,
+    project_path: &ProjectPathId,
+) -> crate::Result<PathBuf> {
+    if get(profile_path, Some(true)).await?.is_some() {
+        let full_path = io::canonicalize(
+            project_path.get_full_path(profile_path.clone()).await?,
+        )?;
+        return Ok(full_path);
+    }
+
+    Err(crate::ErrorKind::OtherError(format!(
+        "Tried to get the full path of a nonexistent or unloaded project at path {}!",
+        project_path.get_full_path(profile_path.clone()).await?.display()
+    ))
+    .into())
 }
 
 /// Edit a profile using a given asynchronous closure
@@ -260,9 +281,9 @@ pub async fn list(
 
 /// Installs/Repairs a profile
 #[tracing::instrument]
-pub async fn install(path: &ProfilePathId) -> crate::Result<()> {
+pub async fn install(path: &ProfilePathId, force: bool) -> crate::Result<()> {
     if let Some(profile) = get(path, None).await? {
-        crate::launcher::install_minecraft(&profile, None).await?;
+        crate::launcher::install_minecraft(&profile, None, force).await?;
     } else {
         return Err(crate::ErrorKind::UnmanagedProfileError(path.to_string())
             .as_error());
@@ -367,6 +388,10 @@ pub async fn update_project(
                 let (path, new_version) = profile
                     .add_project_version(update_version.id.clone())
                     .await?;
+
+                if project.disabled {
+                    profile.toggle_disable_project(&path).await?;
+                }
 
                 if path != project_path.clone() {
                     profile.remove_project(project_path, Some(true)).await?;
@@ -550,8 +575,10 @@ pub async fn remove_project(
 pub async fn export_mrpack(
     profile_path: &ProfilePathId,
     export_path: PathBuf,
-    included_overrides: Vec<String>, // which folders to include in the overrides
+    included_export_candidates: Vec<String>, // which folders/files to include in the export
     version_id: Option<String>,
+    description: Option<String>,
+    _name: Option<String>,
 ) -> crate::Result<()> {
     let state = State::get().await?;
     let io_semaphore = state.io_semaphore.0.read().await;
@@ -563,8 +590,8 @@ pub async fn export_mrpack(
         ))
     })?;
 
-    // remove .DS_Store files from included_overrides
-    let included_overrides = included_overrides
+    // remove .DS_Store files from included_export_candidates
+    let included_export_candidates = included_export_candidates
         .into_iter()
         .filter(|x| {
             if let Some(f) = PathBuf::from(x).file_name() {
@@ -585,12 +612,17 @@ pub async fn export_mrpack(
 
     // Create mrpack json configuration file
     let version_id = version_id.unwrap_or("1.0.0".to_string());
-    let packfile = create_mrpack_json(&profile, version_id).await?;
-    let modrinth_path_list = get_modrinth_pack_list(&packfile);
+    let mut packfile =
+        create_mrpack_json(&profile, version_id, description).await?;
+    let included_candidates_set =
+        HashSet::<_>::from_iter(included_export_candidates.iter());
+    packfile.files.retain(|f| {
+        included_candidates_set.contains(&f.path.get_topmost_two_components())
+    });
 
     // Build vec of all files in the folder
     let mut path_list = Vec::new();
-    build_folder(profile_base_path, &mut path_list).await?;
+    add_all_recursive_folder_paths(profile_base_path, &mut path_list).await?;
 
     // Initialize loading bar
     let loading_bar = init_loading(
@@ -608,38 +640,13 @@ pub async fn export_mrpack(
     for path in path_list {
         emit_loading(&loading_bar, 1.0, None).await?;
 
-        // Get local path of file, relative to profile folder
-        let relative_path = path.strip_prefix(profile_base_path)?;
-
-        // Get highest level folder pair ('a/b' in 'a/b/c', 'a' in 'a')
-        // We only go one layer deep for the sake of not having a huge list of overrides
-        let topmost_two = relative_path.iter().take(2).collect::<Vec<_>>();
-
-        // a,b => a/b
-        // a => a
-        let topmost = match topmost_two.len() {
-            2 => PathBuf::from(topmost_two[0]).join(topmost_two[1]),
-            1 => PathBuf::from(topmost_two[0]),
-            _ => {
-                return Err(crate::ErrorKind::OtherError(
-                    "No topmost folder found".to_string(),
-                )
-                .into())
-            }
-        }
-        .to_string_lossy()
-        .to_string();
-
-        if !included_overrides.contains(&topmost) {
-            continue;
-        }
-
-        let relative_path: std::borrow::Cow<str> =
-            relative_path.to_string_lossy();
-        let relative_path = relative_path.replace('\\', "/");
-        let relative_path = relative_path.trim_start_matches('/').to_string();
-
-        if modrinth_path_list.contains(&relative_path) {
+        let relative_path = ProjectPathId::from_fs_path(&path)
+            .await?
+            .get_inner_path_unix();
+        if packfile.files.iter().any(|f| f.path == relative_path)
+            || !included_candidates_set
+                .contains(&relative_path.get_topmost_two_components())
+        {
             continue;
         }
 
@@ -673,30 +680,28 @@ pub async fn export_mrpack(
     Ok(())
 }
 
-// Given a folder path, populate a Vec of all the subfolders
-// Intended to be used for finding potential override folders
+// Given a folder path, populate a Vec of all the subfolders and files, at most 2 layers deep
 // profile
 // -- folder1
 // -- folder2
+//    -- innerfolder
+//       -- innerfile
+//    -- folder2file
 // -- file1
-// => [folder1, folder2]
+// => [folder1, folder2/innerfolder, folder2/folder2file, file1]
 #[tracing::instrument]
-pub async fn get_potential_override_folders(
-    profile_path: ProfilePathId,
-) -> crate::Result<Vec<PathBuf>> {
+pub async fn get_pack_export_candidates(
+    profile_path: &ProfilePathId,
+) -> crate::Result<Vec<InnerProjectPathUnix>> {
     // First, get a dummy mrpack json for the files within
-    let profile: Profile =
-        get(&profile_path, None).await?.ok_or_else(|| {
-            crate::ErrorKind::OtherError(format!(
-                "Tried to export a nonexistent or unloaded profile at path {}!",
-                profile_path
-            ))
-        })?;
-    // dummy mrpack to get pack list
-    let mrpack = create_mrpack_json(&profile, "0".to_string()).await?;
-    let mrpack_files = get_modrinth_pack_list(&mrpack);
+    let profile: Profile = get(profile_path, None).await?.ok_or_else(|| {
+        crate::ErrorKind::OtherError(format!(
+            "Tried to export a nonexistent or unloaded profile at path {}!",
+            profile_path
+        ))
+    })?;
 
-    let mut path_list: Vec<PathBuf> = Vec::new();
+    let mut path_list: Vec<InnerProjectPathUnix> = Vec::new();
 
     let profile_base_dir = profile.get_profile_full_path().await?;
     let mut read_dir = io::read_dir(&profile_base_dir).await?;
@@ -715,16 +720,16 @@ pub async fn get_potential_override_folders(
                 .map_err(|e| IOError::with_path(e, &profile_base_dir))?
             {
                 let path: PathBuf = entry.path();
-                let name = path.strip_prefix(&profile_base_dir)?.to_path_buf();
-                if !mrpack_files.contains(&name.to_string_lossy().to_string()) {
-                    path_list.push(name);
+                if let Ok(project_path) =
+                    ProjectPathId::from_fs_path(&path).await
+                {
+                    path_list.push(project_path.get_inner_path_unix());
                 }
             }
         } else {
             // One layer of files/folders if its a file
-            let name = path.strip_prefix(&profile_base_dir)?.to_path_buf();
-            if !mrpack_files.contains(&name.to_string_lossy().to_string()) {
-                path_list.push(name);
+            if let Ok(project_path) = ProjectPathId::from_fs_path(&path).await {
+                path_list.push(project_path.get_inner_path_unix());
             }
         }
     }
@@ -820,23 +825,12 @@ pub async fn run_credentials(
         .unwrap_or(&settings.custom_env_args);
 
     // Post post exit hooks
-    let post_exit_hook =
-        &profile.hooks.as_ref().unwrap_or(&settings.hooks).post_exit;
-
-    let post_exit_hook = if let Some(hook) = post_exit_hook {
-        let mut cmd = hook.split(' ');
-        if let Some(command) = cmd.next() {
-            let mut command = Command::new(command);
-            command
-                .args(&cmd.collect::<Vec<&str>>())
-                .current_dir(path.get_full_path().await?);
-            Some(command)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let post_exit_hook = profile
+        .hooks
+        .as_ref()
+        .unwrap_or(&settings.hooks)
+        .post_exit
+        .clone();
 
     // Any options.txt settings that we want set, add here
     let mut mc_set_options: Vec<(String, String)> = vec![];
@@ -922,25 +916,13 @@ pub async fn try_update_playtime(path: &ProfilePathId) -> crate::Result<()> {
     res
 }
 
-fn get_modrinth_pack_list(packfile: &PackFormat) -> Vec<String> {
-    packfile
-        .files
-        .iter()
-        .map(|f| {
-            let path = PathBuf::from(f.path.clone());
-            let name = path.to_string_lossy();
-            let name = name.replace('\\', "/");
-            name.trim_start_matches('/').to_string()
-        })
-        .collect::<Vec<String>>()
-}
-
 /// Creates a json configuration for a .mrpack zipped file
 // Version ID of uploaded version (ie 1.1.5), not the unique identifying ID of the version (nvrqJg44)
 #[tracing::instrument(skip_all)]
 pub async fn create_mrpack_json(
     profile: &Profile,
     version_id: String,
+    description: Option<String>,
 ) -> crate::Result<PackFormat> {
     // Add loader version to dependencies
     let mut dependencies = HashMap::new();
@@ -950,6 +932,9 @@ pub async fn create_mrpack_json(
     ) {
         (crate::prelude::ModLoader::Forge, Some(v)) => {
             dependencies.insert(PackDependency::Forge, v.id)
+        }
+        (crate::prelude::ModLoader::NeoForge, Some(v)) => {
+            dependencies.insert(PackDependency::NeoForge, v.id)
         }
         (crate::prelude::ModLoader::Fabric, Some(v)) => {
             dependencies.insert(PackDependency::FabricLoader, v.id)
@@ -981,18 +966,21 @@ pub async fn create_mrpack_json(
         .projects
         .iter()
         .filter_map(|(mod_path, project)| {
-            let path: String = mod_path.0.clone().to_string_lossy().to_string();
+            let path = mod_path.get_inner_path_unix();
 
             // Only Modrinth projects have a modrinth metadata field for the modrinth.json
             Some(Ok(match project.metadata {
                 crate::prelude::ProjectMetadata::Modrinth {
-                    ref project,
                     ref version,
                     ..
                 } => {
                     let mut env = HashMap::new();
-                    env.insert(EnvType::Client, project.client_side.clone());
-                    env.insert(EnvType::Server, project.server_side.clone());
+                    // TODO: envtype should be a controllable option (in general or at least .mrpack exporting)
+                    // For now, assume required.
+                    // env.insert(EnvType::Client, project.client_side.clone());
+                    // env.insert(EnvType::Server, project.server_side.clone());
+                    env.insert(EnvType::Client, SideType::Required);
+                    env.insert(EnvType::Server, SideType::Required);
 
                     let primary_file = if let Some(primary_file) =
                         version.files.first()
@@ -1037,7 +1025,7 @@ pub async fn create_mrpack_json(
         format_version: 1,
         version_id,
         name: profile.metadata.name.clone(),
-        summary: None,
+        summary: description,
         files,
         dependencies,
     })
@@ -1049,14 +1037,18 @@ fn sanitize_loader_version_string(s: &str, loader: PackDependency) -> &str {
         // If two or more, take the second
         // If one, take the first
         // If none, take the whole thing
-        PackDependency::Forge => {
-            let mut split: std::str::Split<'_, char> = s.split('-');
-            match split.next() {
-                Some(first) => match split.next() {
-                    Some(second) => second,
-                    None => first,
-                },
-                None => s,
+        PackDependency::Forge | PackDependency::NeoForge => {
+            if s.starts_with("1.") {
+                let mut split: std::str::Split<'_, char> = s.split('-');
+                match split.next() {
+                    Some(first) => match split.next() {
+                        Some(second) => second,
+                        None => first,
+                    },
+                    None => s,
+                }
+            } else {
+                s
             }
         }
         // For quilt, etc we take the whole thing, as it functions like: 0.20.0-beta.11 (and should not be split here)
@@ -1068,7 +1060,7 @@ fn sanitize_loader_version_string(s: &str, loader: PackDependency) -> &str {
 
 // Given a folder path, populate a Vec of all the files in the folder, recursively
 #[async_recursion::async_recursion]
-pub async fn build_folder(
+pub async fn add_all_recursive_folder_paths(
     path: &Path,
     path_list: &mut Vec<PathBuf>,
 ) -> crate::Result<()> {
@@ -1080,7 +1072,7 @@ pub async fn build_folder(
     {
         let path = entry.path();
         if path.is_dir() {
-            build_folder(&path, path_list).await?;
+            add_all_recursive_folder_paths(&path, path_list).await?;
         } else {
             path_list.push(path);
         }
@@ -1089,5 +1081,5 @@ pub async fn build_folder(
 }
 
 pub fn sanitize_profile_name(input: &str) -> String {
-    input.replace(['/', '\\', ':'], "_")
+    input.replace(['/', '\\', '?', '*', ':', '\'', '\"', '|', '<', '>'], "_")
 }

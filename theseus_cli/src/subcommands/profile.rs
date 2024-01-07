@@ -175,12 +175,13 @@ impl ProfileInit {
                 .ok_or_else(|| eyre::eyre!("Modloader {loader} unsupported for Minecraft version {game_version}"))?
                 .loaders;
 
-            let loader_version =
-                loaders.iter().cloned().find(filter).ok_or_else(|| {
-                    eyre::eyre!(
-                        "Invalid version {version} for modloader {loader}"
-                    )
-                })?;
+            let loader_version = loaders
+                .iter()
+                .find(|&x| filter(x))
+                .cloned()
+                .ok_or_else(|| {
+                eyre::eyre!("Invalid version {version} for modloader {loader}")
+            })?;
 
             Some((loader_version, loader))
         } else {
@@ -364,6 +365,8 @@ fn modloader_from_str(it: &str) -> core::result::Result<ModLoader, String> {
         "vanilla" => Ok(ModLoader::Vanilla),
         "forge" => Ok(ModLoader::Forge),
         "fabric" => Ok(ModLoader::Fabric),
+        "quilt" => Ok(ModLoader::Quilt),
+        "neoforge" => Ok(ModLoader::NeoForge),
         _ => Err(String::from("Invalid modloader: {it}")),
     }
 }

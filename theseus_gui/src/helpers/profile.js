@@ -17,6 +17,8 @@ import { invoke } from '@tauri-apps/api/tauri'
 */
 
 export async function create(name, gameVersion, modloader, loaderVersion, icon, noWatch) {
+  //Trim string name to avoid "Unable to find directory"
+  name = name.trim()
   return await invoke('plugin:profile_create|profile_create', {
     name,
     gameVersion,
@@ -25,6 +27,11 @@ export async function create(name, gameVersion, modloader, loaderVersion, icon, 
     icon,
     noWatch,
   })
+}
+
+// duplicate a profile
+export async function duplicate(path) {
+  return await invoke('plugin:profile_create|profile_duplicate', { path })
 }
 
 // Remove a profile
@@ -44,6 +51,12 @@ export async function get_full_path(path) {
   return await invoke('plugin:profile|profile_get_full_path', { path })
 }
 
+// Get's a mod's full fs path
+// Returns a path
+export async function get_mod_full_path(path, projectPath) {
+  return await invoke('plugin:profile|profile_get_mod_full_path', { path, projectPath })
+}
+
 // Get optimal java version from profile
 // Returns a java version
 export async function get_optimal_jre_key(path) {
@@ -61,8 +74,8 @@ export async function check_installed(path, projectId) {
 }
 
 // Installs/Repairs a profile
-export async function install(path) {
-  return await invoke('plugin:profile|profile_install', { path })
+export async function install(path, force) {
+  return await invoke('plugin:profile|profile_install', { path, force })
 }
 
 // Updates all of a profile's projects
@@ -101,9 +114,9 @@ export async function remove_project(path, projectPath) {
   return await invoke('plugin:profile|profile_remove_project', { path, projectPath })
 }
 
-// Update a managed Modrinth profile
-export async function update_managed_modrinth(path) {
-  return await invoke('plugin:profile|profile_update_managed_modrinth', { path })
+// Update a managed Modrinth profile to a specific version
+export async function update_managed_modrinth_version(path, versionId) {
+  return await invoke('plugin:profile|profile_update_managed_modrinth_version', { path, versionId })
 }
 
 // Repair a managed Modrinth profile
@@ -114,12 +127,21 @@ export async function update_repair_modrinth(path) {
 // Export a profile to .mrpack
 /// included_overrides is an array of paths to override folders to include (ie: 'mods', 'resource_packs')
 // Version id is optional (ie: 1.1.5)
-export async function export_profile_mrpack(path, exportLocation, includedOverrides, versionId) {
+export async function export_profile_mrpack(
+  path,
+  exportLocation,
+  includedOverrides,
+  versionId,
+  description,
+  name
+) {
   return await invoke('plugin:profile|profile_export_mrpack', {
     path,
     exportLocation,
     includedOverrides,
     versionId,
+    description,
+    name,
   })
 }
 
@@ -131,8 +153,8 @@ export async function export_profile_mrpack(path, exportLocation, includedOverri
 // -- file1
 // => [mods, resourcepacks]
 // allows selection for 'included_overrides' in export_profile_mrpack
-export async function get_potential_override_folders(profilePath) {
-  return await invoke('plugin:profile|profile_get_potential_override_folders', { profilePath })
+export async function get_pack_export_candidates(profilePath) {
+  return await invoke('plugin:profile|profile_get_pack_export_candidates', { profilePath })
 }
 
 // Run Minecraft using a pathed profile

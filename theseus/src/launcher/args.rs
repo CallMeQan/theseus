@@ -1,6 +1,6 @@
 //! Minecraft CLI argument logic
-// TODO: Rafactor this section
-use super::{auth::Credentials, parse_rule};
+use super::auth::Credentials;
+use crate::launcher::parse_rules;
 use crate::{
     state::{MemorySettings, WindowSize},
     util::{io::IOError, platform::classpath_separator},
@@ -11,6 +11,7 @@ use daedalus::{
     modded::SidedDataEntry,
 };
 use dunce::canonicalize;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::{collections::HashMap, path::Path};
 use uuid::Uuid;
@@ -23,12 +24,13 @@ pub fn get_class_paths(
     libraries: &[Library],
     client_path: &Path,
     java_arch: &str,
+    minecraft_updated: bool,
 ) -> crate::Result<String> {
     let mut cps = libraries
         .iter()
         .filter_map(|library| {
             if let Some(rules) = &library.rules {
-                if !rules.iter().any(|x| parse_rule(x, java_arch)) {
+                if !parse_rules(rules, java_arch, minecraft_updated) {
                     return None;
                 }
             }
@@ -39,9 +41,9 @@ pub fn get_class_paths(
 
             Some(get_lib_path(libraries_path, &library.name, false))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<HashSet<_>, _>>()?;
 
-    cps.push(
+    cps.insert(
         canonicalize(client_path)
             .map_err(|_| {
                 crate::ErrorKind::LauncherError(format!(
@@ -54,7 +56,10 @@ pub fn get_class_paths(
             .to_string(),
     );
 
-    Ok(cps.join(classpath_separator(java_arch)))
+    Ok(cps
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(classpath_separator(java_arch)))
 }
 
 pub fn get_class_paths_jar<T: AsRef<str>>(
@@ -143,7 +148,6 @@ pub fn get_jvm_arguments(
             parsed_arguments.push(arg);
         }
     }
-    parsed_arguments.push("-Dorg.lwjgl.util.Debug=true".to_string());
 
     Ok(parsed_arguments)
 }
@@ -268,8 +272,8 @@ fn parse_minecraft_argument(
         .replace("${auth_player_name}", username)
         // TODO: add auth xuid eventually
         .replace("${auth_xuid}", "0")
-        .replace("${auth_uuid}", &uuid.hyphenated().to_string())
-        .replace("${uuid}", &uuid.hyphenated().to_string())
+        .replace("${auth_uuid}", &uuid.simple().to_string())
+        .replace("${uuid}", &uuid.simple().to_string())
         .replace("${clientid}", "c4502edb-87c6-40cb-b595-64a280cf8906")
         .replace("${user_properties}", "{}")
         .replace("${user_type}", "msa")
@@ -335,7 +339,7 @@ where
                 }
             }
             Argument::Ruled { rules, value } => {
-                if rules.iter().any(|x| parse_rule(x, java_arch)) {
+                if parse_rules(rules, java_arch, true) {
                     match value {
                         ArgumentValue::Single(arg) => {
                             parsed_arguments.push(parse_function(

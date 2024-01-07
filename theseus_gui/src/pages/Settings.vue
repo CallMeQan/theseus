@@ -14,27 +14,35 @@ import {
   UpdatedIcon,
 } from 'omorphia'
 import { handleError, useTheming } from '@/store/state'
-import { change_config_dir, get, set } from '@/helpers/settings'
+import { is_dir_writeable, change_config_dir, get, set } from '@/helpers/settings'
 import { get_max_memory } from '@/helpers/jre'
 import { get as getCreds, logout } from '@/helpers/mr_auth.js'
 import JavaSelector from '@/components/ui/JavaSelector.vue'
 import ModrinthLoginScreen from '@/components/ui/tutorial/ModrinthLoginScreen.vue'
 import { mixpanel_opt_out_tracking, mixpanel_opt_in_tracking } from '@/helpers/mixpanel'
 import { open } from '@tauri-apps/api/dialog'
+import { getOS } from '@/helpers/utils.js'
+import { version } from '../../package.json'
 
 const pageOptions = ['Home', 'Library']
 
 const themeStore = useTheming()
 
-const fetchSettings = await get().catch(handleError)
+const accessSettings = async () => {
+  const settings = await get()
 
-if (!fetchSettings.java_globals.JAVA_8)
-  fetchSettings.java_globals.JAVA_8 = { path: '', version: '' }
-if (!fetchSettings.java_globals.JAVA_17)
-  fetchSettings.java_globals.JAVA_17 = { path: '', version: '' }
+  if (!settings.java_globals.JAVA_8) settings.java_globals.JAVA_8 = { path: '', version: '' }
+  if (!settings.java_globals.JAVA_17) settings.java_globals.JAVA_17 = { path: '', version: '' }
 
-fetchSettings.javaArgs = fetchSettings.custom_java_args.join(' ')
-fetchSettings.envArgs = fetchSettings.custom_env_args.map((x) => x.join('=')).join(' ')
+  settings.javaArgs = settings.custom_java_args.join(' ')
+  settings.envArgs = settings.custom_env_args.map((x) => x.join('=')).join(' ')
+
+  return settings
+}
+
+// const launcherVersion = await get_launcher_version().catch(handleError)
+
+const fetchSettings = await accessSettings().catch(handleError)
 
 const settings = ref(fetchSettings)
 const settingsDir = ref(settings.value.loaded_config_dir)
@@ -43,6 +51,10 @@ const maxMemory = ref(Math.floor((await get_max_memory().catch(handleError)) / 1
 watch(
   settings,
   async (oldSettings, newSettings) => {
+    if (oldSettings.loaded_config_dir !== newSettings.loaded_config_dir) {
+      return
+    }
+
     const setSettings = JSON.parse(JSON.stringify(newSettings))
 
     if (setSettings.opt_out_analytics) {
@@ -107,7 +119,18 @@ async function signInAfter() {
 }
 
 async function findLauncherDir() {
-  const newDir = await open({ multiple: false, directory: true })
+  const newDir = await open({
+    multiple: false,
+    directory: true,
+    title: 'Select a new app directory',
+  })
+
+  const writeable = await is_dir_writeable(newDir)
+
+  if (!writeable) {
+    handleError('The selected directory does not have proper permissions for write access.')
+    return
+  }
 
   if (newDir) {
     settingsDir.value = newDir
@@ -116,7 +139,9 @@ async function findLauncherDir() {
 }
 
 async function refreshDir() {
-  await change_config_dir(settingsDir.value)
+  await change_config_dir(settingsDir.value).catch(handleError)
+  settings.value = await accessSettings().catch(handleError)
+  settingsDir.value = settings.value.loaded_config_dir
 }
 </script>
 
@@ -133,11 +158,7 @@ async function refreshDir() {
         class="login-screen-modal"
         :noblur="!themeStore.advancedRendering"
       >
-        <ModrinthLoginScreen
-          :modal="true"
-          :prev-page="$refs.loginScreenModal.show()"
-          :next-page="signInAfter"
-        />
+        <ModrinthLoginScreen :modal="true" :prev-page="signInAfter" :next-page="signInAfter" />
       </Modal>
       <div class="adjacent-input">
         <label for="theme">
@@ -147,9 +168,13 @@ async function refreshDir() {
           </span>
           <span v-else> Sign in to your Modrinth account. </span>
         </label>
-        <button v-if="credentials" class="btn" @click="logOut"><LogOutIcon /> Sign out</button>
+        <button v-if="credentials" class="btn" @click="logOut">
+          <LogOutIcon />
+          Sign out
+        </button>
         <button v-else class="btn" @click="$refs.loginScreenModal.show()">
-          <LogInIcon /> Sign in
+          <LogInIcon />
+          Sign in
         </button>
       </div>
       <label for="theme">
@@ -232,6 +257,22 @@ async function refreshDir() {
           @update:model-value="
             (e) => {
               settings.hide_on_process = e
+            }
+          "
+        />
+      </div>
+      <div v-if="getOS() != 'MacOS'" class="adjacent-input">
+        <label for="native-decorations">
+          <span class="label__title">Native decorations</span>
+          <span class="label__description">Use system window frame (app restart required).</span>
+        </label>
+        <Toggle
+          id="native-decorations"
+          :model-value="settings.native_decorations"
+          :checked="settings.native_decorations"
+          @update:model-value="
+            (e) => {
+              settings.native_decorations = e
             }
           "
         />
@@ -323,6 +364,21 @@ async function refreshDir() {
           "
         />
       </div>
+      <div class="adjacent-input">
+        <label for="disable-discord-rpc">
+          <span class="label__title">Disable Discord RPC</span>
+          <span class="label__description">
+            Disables the Discord Rich Presence integration. 'Modrinth' will no longer show up as a
+            game or app you are using on your Discord profile. This does not disable any
+            instance-specific Discord Rich Presence integrations, such as those added by mods.
+          </span>
+        </label>
+        <Toggle
+          id="disable-discord-rpc"
+          v-model="settings.disable_discord_rpc"
+          :checked="settings.disable_discord_rpc"
+        />
+      </div>
     </Card>
     <Card>
       <div class="label">
@@ -372,9 +428,9 @@ async function refreshDir() {
         <Slider
           id="max-memory"
           v-model="settings.memory.maximum"
-          :min="256"
+          :min="8"
           :max="maxMemory"
-          :step="1"
+          :step="64"
           unit="mb"
         />
       </div>
@@ -477,6 +533,19 @@ async function refreshDir() {
           class="input"
           placeholder="Enter height..."
         />
+      </div>
+    </Card>
+    <Card>
+      <div class="label">
+        <h3>
+          <span class="label__title size-card-header">About</span>
+        </h3>
+      </div>
+      <div>
+        <label>
+          <span class="label__title">App version</span>
+          <span class="label__description">Theseus v{{ version }} </span>
+        </label>
       </div>
     </Card>
   </div>

@@ -218,6 +218,10 @@ async fn import_atlauncher_unmanaged(
         prof.metadata.linked_data = Some(LinkedData {
             project_id: description.project_id.clone(),
             version_id: description.version_id.clone(),
+            locked: Some(
+                description.project_id.is_some()
+                    && description.version_id.is_some(),
+            ),
         });
         prof.metadata.icon = description.icon.clone();
         prof.metadata.game_version = game_version.clone();
@@ -241,8 +245,12 @@ async fn import_atlauncher_unmanaged(
     if let Some(profile_val) =
         crate::api::profile::get(&profile_path, None).await?
     {
-        crate::launcher::install_minecraft(&profile_val, Some(loading_bar))
-            .await?;
+        crate::launcher::install_minecraft(
+            &profile_val,
+            Some(loading_bar),
+            false,
+        )
+        .await?;
         {
             let state = State::get().await?;
             let mut file_watcher = state.file_watcher.write().await;
