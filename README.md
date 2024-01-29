@@ -9,6 +9,8 @@ I forked this because I want to fix some bugs and problems which currently exist
 - Intellij IDEA (Need Ultimate Edition to work with Node.js)
 - Git
 
+Or **use RustOver from JetBrains, it will install everything you need and start from step 4**
+
 ## Steps
 1. Clone this repository
 2. Open the repo  in VSCode or Intellij IDEA
