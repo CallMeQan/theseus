@@ -1,40 +1,39 @@
-# A Modrinth App (Minecraft Launcher)
-I forked this because I want to fix some bugs and problems which currently exist in the original version. I will also add some features which I think are useful.
+# ![Modrinth Monorepo Cover](/.github/assets/monorepo_cover.png)
 
-# Installation to build your own
-### Preqrequisites
-- Node.js (vite, vue, tauri)
-- Rust (Install it carefully)
-- VSCode (Recommended)
-- Intellij IDEA (Need Ultimate Edition to work with Node.js)
-- Git
+![Issues](https://img.shields.io/github/issues-raw/Modrinth/code?color=c78aff&label=issues&style=for-the-badge)
+![Pull Requests](https://img.shields.io/github/issues-pr-raw/Modrinth/code?color=c78aff&label=PRs&style=for-the-badge)
+![Contributors](https://img.shields.io/github/contributors/Modrinth/code?color=c78aff&label=contributors&style=for-the-badge)
+![Lines](https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/modrinth/code/badge?style=flat&logoColor=white&color=c78aff&style=for-the-badge)
+![Commit Activity](https://img.shields.io/github/commit-activity/m/Modrinth/code?color=c78aff&label=commits&style=for-the-badge)
+![Last Commit](https://img.shields.io/github/last-commit/Modrinth/code?color=c78aff&label=last%20commit&style=for-the-badge)
 
-Or **use RustOver from JetBrains, it will install everything you need and start from step 4**
+## Modrinth Monorepo
 
-## Steps
-1. Clone this repository
-2. Open the repo  in VSCode or Intellij IDEA
+Welcome to the Modrinth Monorepo, the primary codebase for the Modrinth web interface and app. It contains ![Lines](https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/modrinth/olympus/badge?logoColor=white&color=black&label=) lines of code and has ![Contributors](https://img.shields.io/github/contributors/Modrinth/code?color=black&label=) contributors!
 
+If you're not a developer and you've stumbled upon this repository, you can access the web interface on the [Modrinth website](https://modrinth.com) and download the latest release of the app [here](https://modrinth.com/app).
 
-3. VSCode should install the recommended extensions
-    - ESLint
-    - Prettier
-    - Rust Analyzer
-    - CSS variables autocomplete
-    - Stylelint
-    - Svetle Auto Import
-    - Svelte for VS Code
-    - Svelte Intellisense
-    - Tauri
-    - Vue Language Features
-    - IntelliCode (Most important)
-3. Intellij IDEA must install Rust plugin from JetBrains Official and enable JavaScript and TypeScript support
-4. Open folder `theseus_gui` and install necessary packages from NPM
-5. Build the `theseus` package from Rust first
-5. Run `npm run dev` in `theseus_gui` to build stage 1
-6. Run `npm run tauri dev` in `theseus_gui` to build stage 2
+## Development
 
-Now the build should be ready in `target/release` folder
+This repository contains two primary packages. For detailed development information, please refer to their respective READMEs:
 
-## Notes
-If you got into error `linker.exe` not found, you need to install Visual Studio Build Tools. [Read more here](https://code.visualstudio.com/docs/languages/rust#_common-questions)
+- [Web Interface](apps/frontend/README.md)
+- [Desktop App](apps/app/README.md)
+
+## Contributing
+
+We welcome contributions! Before submitting any contributions, please read our [contributing guidelines](https://support.modrinth.com/en/articles/8802215-contributing-to-modrinth).
+
+If you plan to fork this repository for your own purposes, please review our [copying guidelines](COPYING.md).
+
+## Security
+
+If you discover a security vulnerability within our codebase, please follow our [responsible disclosure guidelines](https://modrinth.com/legal/security).
+
+## Support
+
+If you need help with the Modrinth web interface or app, please visit our [support page](https://support.modrinth.com). For general inquiries, you can also join our [Discord server](https://discord.gg/modrinth).
+
+## License
+
+All packages in this repository are licensed under their respective licenses. Refer to the LICENSE file in each package for more information.
